@@ -1,0 +1,598 @@
+#!/usr/bin/env python3
+# BH -- Accounting Utility Program v0.1.0
+# Copyright (C) 2018  Eric Haberstroh <eric@erixpage.de>
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import argparse
+import json
+import signal
+from prompt_toolkit import prompt
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.styles import style_from_dict
+from pygments.token import Token
+from shlex import split
+import collections
+
+history = InMemoryHistory()
+accounts = {}
+accounts_dirty = False
+taxrate = 0.0
+
+prompt_style = style_from_dict({
+    # User input.
+    Token:          '#ff0066',
+
+    # Prompt.
+    Token.Taxrate:  '#ffd700',
+    Token.Dirty:    '#ff0000',
+    Token.Clean:    '#00ff00',
+    Token.BH:       '#ffffff'
+})
+
+def bh_hdl_unknown(args):
+    print('Unknown command. Type `help\' to discover commands.')
+
+def bh_hdl_exit(args):
+    if accounts_dirty:
+        print('Warning: There are accounts in memory that have not been saved to a file.')
+        print('Use `saveacc\' to save the accounts to a file. If you wish to exit regardless,')
+        print('use `setdirty 0\' to discard this warning, then `quit\' to exit.')
+        return
+    exit(0)
+
+def bh_hdl_help(args):
+    if len(args) == 0:
+        bh_help_topics()
+    else:
+        for topic in args:
+            handler = bh_map_help(topic)
+            handler()
+
+def bh_help_unknown():
+    print('Unknown help topic. Type `help\' to get an overview of help topics.')
+
+def bh_map_help(topic):
+    return {
+        'loadacc': bh_help_loadacc,
+        'newacc': bh_help_newacc,
+        'delacc': bh_help_delacc,
+        'acc': bh_help_acc,
+        'accno': bh_help_accno,
+        'pracc': bh_help_pracc,
+        'saveacc': bh_help_saveacc,
+        'clearacc': bh_help_clearacc,
+        'setdirty': bh_help_setdirty,
+        'settaxr': bh_help_settaxr,
+        'prtaxr': bh_help_prtaxr,
+        'net': bh_help_net,
+        'gr': bh_help_gr,
+        'split': bh_help_split,
+        'sum': bh_help_sum,
+        'netsum': bh_help_netsum,
+        'grsum': bh_help_grsum,
+        'exec': bh_help_exec
+    }.get(topic, bh_help_unknown)
+
+def bh_help_topics():
+    print(('Welcome to BH, the Accounting Utility Program! This is the interactive online help.\n'
+           'Type `help <topic>\' to get further help for any of the following topics.\n\n'
+           'Account Management\n'
+           '  acc          search through the list of accounts by account name\n'
+           '  accno        search through the list of accounts by account number\n'
+           '  clearacc     clear the list of accounts in memory\n'
+           '  delacc       delete an account from the account list\n'
+           '  loadacc      load a list of accounts from one or more files\n'
+           '  newacc       insert a new account into the accounts list\n'
+           '  pracc        print the list of accounts\n'
+           '  saveacc      save the list of accounts to a file on disk\n'
+           '  setdirty     set the value of the dirty bit to indicate unsaved changes\n'
+           'Taxrate Settings\n'
+           '  prtaxr       print the currently set taxrate\n'
+           '  settaxr      set the taxrate for all calculations\n'
+           'Calculations\n'
+           '  gr           convert net amounts to gross value according to the taxrate\n'
+           '  grsum        calculate totals after converting net amounts to gross value\n'
+           '  net          convert gross amounts to net value according to the taxrate\n'
+           '  netsum       calculate totals after converting gross amounts to net value\n'
+           '  sum          calculate totals\n'
+           'Bill Splitting\n'
+           '  split        split bills between one or more people\n'
+           'Batch Execution\n'
+           '  exec         execute commands from batch files\n\n'
+           'To learn about command-line arguments, call this program with `bh --help\' or read the manual\n'
+           'page bh(1). Further online help is available in the Info manual available by typing `info bh\'.'))
+
+def bh_hdl_warranty(args):
+    print(('15. Disclaimer of Warranty.\n\n'
+           'THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW.\n'
+           'EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES\n'
+           'PROVIDE THE PROGRAM “AS IS” WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED,\n'
+           'INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS\n'
+           'FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE\n'
+           'PROGRAM IS WITH YOU. SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL\n'
+           'NECESSARY SERVICING, REPAIR OR CORRECTION.\n\n'
+           '16. Limitation of Liability.\n\n'
+           'IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING WILL ANY COPYRIGHT\n'
+           'HOLDER, OR ANY OTHER PARTY WHO MODIFIES AND/OR CONVEYS THE PROGRAM AS PERMITTED ABOVE,\n'
+           'BE LIABLE TO YOU FOR DAMAGES, INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL\n'
+           'DAMAGES ARISING OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED\n'
+           'TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY YOU OR THIRD\n'
+           'PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER PROGRAMS), EVEN IF SUCH\n'
+           'HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.\n\n'
+           '17. Interpretation of Sections 15 and 16.\n\n'
+           'If the disclaimer of warranty and limitation of liability provided above cannot be given\n'
+           'local legal effect according to their terms, reviewing courts shall apply local law that\n'
+           'most closely approximates an absolute waiver of all civil liability in connection with\n'
+           'the Program, unless a warranty or assumption of liability accompanies a copy of the\n'
+           'Program in return for a fee.'))
+
+def bh_hdl_conditions(args):
+    print(('4. Conveying Verbatim Copies.\n\n'
+           'You may convey verbatim copies of the Program\'s source code as you receive it, in any\n'
+           'medium, provided that you conspicuously and appropriately publish on each copy an\n'
+           'appropriate copyright notice; keep intact all notices stating that this License and\n'
+           'any non-permissive terms added in accord with section 7 apply to the code; keep intact\n'
+           'all notices of the absence of any warranty; and give all recipients a copy of this\n'
+           'License along with the Program.\n\n'
+           'You may charge any price or no price for each copy that you convey, and you may offer\n'
+           'support or warranty protection for a fee.\n\n'
+           '5. Conveying Modified Source Versions.\n\n'
+           'You may convey a work based on the Program, or the modifications to produce it from the\n'
+           'Program, in the form of source code under the terms of section 4, provided that you\n'
+           'also meet all of these conditions:\n\n'
+           'a) The work must carry prominent notices stating that you modified it, and giving a\n'
+           '   relevant date.\n'
+           'b) The work must carry prominent notices stating that it is released under this License\n'
+           '   and any conditions added under section 7. This requirement modifies the requirement\n'
+           '   in section 4 to “keep intact all notices”.\n'
+           'c) You must license the entire work, as a whole, under this License to anyone who comes\n'
+           '   into possession of a copy. This License will therefore apply, along with any\n'
+           '   applicable section 7 additional terms, to the whole of the work, and all its parts,\n'
+           '   regardless of how they are packaged. This License gives no permission to license the\n'
+           '   work in any other way, but it does not invalidate such permission if you have\n'
+           '   separately received it.\n'
+           'd) If the work has interactive user interfaces, each must display Appropriate Legal\n'
+           '   Notices; however, if the Program has interactive interfaces that do not display\n'
+           '   Appropriate Legal Notices, your work need not make them do so.'))
+
+def bh_help_loadacc():
+    print(('Usage: loadacc ACCOUNTFILE...\n\n'
+           'Load a list of accounts from ACCOUNTFILE and append it to the global list of accounts\n'
+           'in memory. ACCOUNTFILE should contain a JSON-serialized object with a number of key-value\n'
+           'pairs where the key will be treated as an account number and the value will be used as\n'
+           'the account\'s name, converted to uppercase before storing it in the accounts list.\n'
+           'If any of the given ACCOUNTFILEs is not readable, a warning is issued but processing\n'
+           'of the other ACCOUNTFILEs is continued.'))
+
+def bh_hdl_loadacc(args):
+    global accounts
+    if args == []:
+        print('Error: Expected at least one filename to load accounts from.')
+        print('Type `help loadacc\' to learn more.')
+        return
+    for filename in args:
+        try:
+            with open(filename, 'r') as accfile:
+                acclist = json.load(accfile)
+                for accno in acclist:
+                    if accno in accounts:
+                        print('Warning: Overriding account {} with new name {}'.format(accno, acclist[accno].upper()))
+                    accounts[accno] = acclist[accno].upper()
+                print('Loaded {} account(s) from {}'.format(len(acclist), filename))
+        except IOError as err:
+            print(err)
+
+def bh_help_newacc():
+    print(('Usage: newacc ACCOUNT_NUMBER NAME\n\n'
+           'Insert a new account into the accounts list in memory. NAME will be converted to uppercase\n'
+           'first. If an account with the given number already exists, overwriting it will be refused.\n'
+           'After the account is inserted, the dirty bit is set to True to indicate that unsaved changes\n'
+           'to the accounts list exist in memory.'))
+
+def bh_hdl_newacc(args):
+    global accounts_dirty
+    global accounts
+    if len(args) != 2:
+        print('Error: Expected exactly two arguments: Account Number, Account Name.')
+        print('Type `help newacc\' to learn more.')
+        return
+    accno = args[0]
+    accname = args[1]
+    if accno in accounts:
+        print('Error: Account {} already exists. Refusing to overwrite.'.format(accno))
+        print('Type `delacc {}\' to delete the account.'.format(accno))
+        return
+    accounts[accno] = accname.upper()
+    accounts_dirty = True
+
+def bh_help_delacc():
+    print(('Usage: delacc ACCOUNT_NUMBER...\n\n'
+           'Delete each of the given accounts from the global accounts list. If any given account is\n'
+           'not found in the accounts list, a warning is issued, but processing of the other accounts\n'
+           'is continued.'))
+
+def bh_hdl_delacc(args):
+    global accounts_dirty
+    global accounts
+    if len(args) < 1:
+        print('Error: Expected one or more account numbers to remove.')
+        print('Type `help delacc\' to learn more.')
+        return
+    for accno in args:
+        if accno in accounts:
+            accounts.pop(accno)
+        else:
+            print('Warning: Unknown account number {}'.format(accno))
+    accounts_dirty = True
+
+def bh_help_acc():
+    print(('Usage: acc TERM...\n\n'
+           'Search through the account names in the global accounts list for each TERM and display\n'
+           'accounts which have TERM in their name.'))
+
+def bh_hdl_acc(args):
+    if len(args) < 1:
+        print('Error: Expected one or more search terms. Use `pracc\' to display all accounts.')
+        print('Type `help acc\' to learn more.')
+        return
+    for term in args:
+        print('{}:'.format(term))
+        results = ['{:>6} {}'.format(accno, name) for accno, name in accounts.items() if term.upper() in name]
+        for res in results:
+            print(res)
+
+def bh_help_accno():
+    print(('Usage: accno NUMBER...\n\n'
+           'Search through the account numbers in the global accounts list for each NUMBER and\n'
+           'display accounts which have NUMBER in their account number.'))
+
+def bh_hdl_accno(args):
+    if len(args) < 1:
+        print('Error: Expected one or more account numbers. Use `pracc\' to display all accounts.')
+        print('Type `help accno\' to learn more.')
+        return
+    for accnosearch in args:
+        print('{}:'.format(accnosearch))
+        results = ['{:>6} {}'.format(accno, name) for accno, name in accounts.items() if accnosearch in accno]
+        for res in results:
+            print(res)
+
+def bh_help_pracc():
+    print(('Usage: pracc\n\n'
+           'Sort the global accounts list by account numbers and print it to the screen.'))
+
+def bh_hdl_pracc(args):
+    accounts_sorted = collections.OrderedDict(sorted(accounts.items()))
+    for accno in accounts_sorted.keys():
+        print('{:>6} {}'.format(accno, accounts[accno]))
+
+def bh_help_saveacc():
+    print(('Usage: saveacc FILENAME\n\n'
+           'Save the entire accounts list from memory to the given file. If no error occurs, the dirty bit\n'
+           'is set to False to indicate that no unsaved changes to the accounts list exist in memory.'))
+
+def bh_hdl_saveacc(args):
+    global accounts_dirty
+    if len(args) != 1:
+        print('Error: Expected exactly one filename to write accounts to.')
+        print('Type `help saveacc\' to learn more.')
+        return
+    try:
+        with open(args[0], 'w') as accfile:
+            accfile.write(json.dumps(accounts))
+        accounts_dirty = False
+    except IOError as err:
+        print(err)
+
+def bh_help_clearacc():
+    print(('Usage: clearacc\n\n'
+           'Clear the global accounts list in memory. If the dirty bit is set to True, indicating unsaved\n'
+           'changes in memory, clearing the accounts list will be refused.'))
+
+def bh_hdl_clearacc(args):
+    global accounts
+    if accounts_dirty:
+        print('Error: There are unsaved accounts in memory. Refusing to clear list.')
+        print('To save the accounts, type `saveacc\'. If you wish to clear the accounts')
+        print('regardless, type `setdirty 0\' to get rid of this warning and then type')
+        print('`clearacc\' again. Type `help clearacc\' to learn more.')
+        return
+    accounts = {}
+
+def bh_help_setdirty():
+    print(('Usage: setdirty VALUE\n\n'
+           'Set the value of the dirty bit. The dirty bit indicates whether unsaved changes to the\n'
+           'accounts list exist in memory. The dirty bit will be set to True by newacc, for example.\n'
+           'Other command like quit and clearacc alter their behavior depending on its value. You\n'
+           'can override the value of the dirty bit with this command. Accepted values to turn\n'
+           'the dirty bit to True are: 1, true, yes, on, one. To turn the dirty bit off, use:\n'
+           '0, false, no, off, zero. Values are treated case-insensitively.'))
+
+def bh_hdl_setdirty(args):
+    global accounts_dirty
+    if len(args) != 1:
+        print('Error: Expected new value for the dirty bit (0 or 1).')
+        print('Type `help setdirty\' to learn more.')
+        return
+    if args[0].lower() in ['1', 'true', 'yes', 'on', 'one']:
+        accounts_dirty = True
+    elif args[0].lower() in ['0', 'false', 'no', 'off', 'zero']:
+        accounts_dirty = False
+    else:
+        print('Error: Unknown argument {}. Type `help setdirty\' to learn more.'.format(args[0]))
+        return
+
+def bh_help_settaxr():
+    print(('Usage: settaxr TAXRATE\n\n'
+           'Set the taxrate for all calculations to the given percentage. The taxrate is observed\n'
+           'by the net, gr, netsum, grsum and split commands. The initial value at startup is 0.'))
+
+def bh_hdl_settaxr(args):
+    global taxrate
+    if len(args) != 1:
+        print('Error: Expected new tax rate to set.')
+        print('Type `help settaxr\' to learn more.')
+        return
+    taxrate = float(args[0])
+
+def bh_help_prtaxr():
+    print(('Usage: prtaxr\n\n'
+           'Print the currently set taxrate to the screen.'))
+
+def bh_hdl_prtaxr(args):
+    print('Taxrate is set to {:.2f} percent.'.format(taxrate))
+
+def bh_help_net():
+    print(('Usage: net AMOUNT...\n\n'
+           'Treat each of the given AMOUNTs as a gross value and calculate the net value according\n'
+           'to the taxrate set by the settaxr command.'))
+
+def bh_hdl_net(args):
+    if len(args) < 1:
+        print('Error: Expected at least one amount to convert to net value.')
+        print('Type `help net\' to learn more.')
+        return
+    for amount in args:
+        print('{: 8.2f}: NET({: 4.2f}%) {: 8.2f}'.format(float(amount), taxrate, float(amount) / (1 + (taxrate / 100))))
+
+def bh_help_gr():
+    print(('Usage: gr AMOUNT...\n\n'
+           'Treat each of the given AMOUNTs as a net value and calculate the gross value according\n'
+           'to the taxrate set by the settaxr command.'))
+
+def bh_hdl_gr(args):
+    if len(args) < 1:
+        print('Error: Expected at least one amount to convert to gross value.')
+        print('Type `help gr\' to learn more.')
+        return
+    for amount in args:
+        print('{: 8.2f}: GROSS({: 4.2f}%) {: 8.2f}'.format(float(amount), taxrate, float(amount) * (1 + (taxrate / 100))))
+
+def bh_help_split():
+    print(('Usage: split [TOTAL AMOUNT...]\n\n'
+           'Split a bill with a total of TOTAL by subtracting each AMOUNT. If a rest remains, print it.\n'
+           'If the sum of AMOUNTs is bigger than the TOTAL, print a warning. If the taxrate is set to anything\n'
+           'but 0, each AMOUNT is treated as a net value and converted to gross value first. The TOTAL will\n'
+           'be assumed to already be gross value. If the taxrate is 0, no conversion is applied. If called\n'
+           'with no arguments, the TOTAL and an arbitrary number of AMOUNTs will be prompted for interactively.'))
+
+def bh_hdl_split(args):
+    amounts = []
+    if len(args) == 0:
+        # Interactive mode.
+        total = float(prompt('Total: '))
+        while True:
+            amount = prompt('Amount (empty line to quit): ')
+            if amount != '':
+                amounts.append(float(amount))
+            else:
+                break
+    elif len(args) == 1:
+        print('Error: Expected at least two arguments: Total amount, amount to subtract.')
+        print('Call without any arguments to enter interactive mode.')
+        print('Type `help split\' to learn more.')
+        return
+    else:
+        total = float(args[0])
+        for amount in args[1:]:
+            amounts.append(float(amount))
+    print('TOTAL {: 8.2f}'.format(total))
+    perindex = 0
+    for amount in amounts:
+        if taxrate != 0:
+            amount = amount * (1 + (taxrate / 100))
+        total -= amount
+        perindex += 1
+        print('PER{:02d} {: 8.2f}'.format(perindex, amount))
+    if total > 0:
+        print('REST  {: 8.2f}'.format(total))
+    elif total < 0:
+        print('!MISS {: 8.2f}'.format(abs(total)))
+    else:
+        print('EXACT')
+
+def bh_help_sum():
+    print(('Usage: sum [AMOUNT...]\n\n'
+           'Calculate a total by adding each AMOUNT. When called with no argument, prompt\n'
+           'for an arbitrary number of AMOUNTs interactively. No net/gross conversion is applied.'))
+
+def bh_hdl_sum(args):
+    total = 0.0
+    if len(args) == 0:
+        # Interactive mode.
+        while True:
+            amount = prompt('Amount (empty line to quit): ')
+            if amount != '':
+                total += float(amount)
+            else:
+                break
+    else:
+        for amount in args:
+            total += float(amount)
+    print('TOTAL {: 8.2f}'.format(total))
+
+def bh_help_netsum():
+    print(('Usage: netsum [AMOUNT...]\n\n'
+           'Calculate a total by adding each AMOUNT, treating it as gross value and converting\n'
+           'it to net value according to the taxrate set by the settaxr command. When called with\n'
+           'no argument, prompt for an arbitrary number of AMOUNTs interactively.'))
+
+def bh_hdl_netsum(args):
+    total = 0.0
+    if len(args) == 0:
+        # Interactive mode.
+        while True:
+            amount = prompt('Amount (empty line to quit): ')
+            if amount != '':
+                total += float(amount) / (1 + (taxrate / 100))
+            else:
+                break
+    else:
+        for amount in args:
+            total += float(amount) / (1 + (taxrate / 100))
+    print('TOTAL {: 8.2f}'.format(total))
+
+def bh_help_grsum():
+    print(('Usage: grsum [AMOUNT...]\n\n'
+           'Calculate a total by adding each AMOUNT, treating it as net value and converting it\n'
+           'to gross value according to the taxrate set by the settaxr command. When called with\n'
+           'no argument, prompt for an arbitrary number of AMOUNTs interactively.'))
+
+def bh_hdl_grsum(args):
+    total = 0.0
+    if len(args) == 0:
+        # Interactive mode.
+        while True:
+            amount = prompt('Amount (empty line to quit): ')
+            if amount != '':
+                total += float(amount) * (1 + (taxrate / 100))
+            else:
+                break
+    else:
+        for amount in args:
+            total += float(amount) * (1 + (taxrate / 100))
+    print('TOTAL {: 8.2f}'.format(total))
+
+def bh_help_exec():
+    print(('Usage: exec BATCHFILE...\n\n'
+           'Read commands from each BATCHFILE and execute them in the interactive session.\n'
+           'Each BATCHFILE should contain one command per line. Commands should be given\n'
+           'like they would be in the interactive session. Each command is printed to the\n'
+           'screen before being executed. BATCHFILEs may contain comment lines starting\n'
+           'with a pound sign (#), but inline comments are not allowed.'))
+
+def bh_hdl_exec(args):
+    if len(args) < 1:
+        print('Error: Expected at least one batch filename to execute.')
+        print('Type `help exec\' to learn more.')
+        return
+    for filename in args:
+        try:
+            for line in open(filename, 'r'):
+                if line[0] != '#':
+                    print('BH> {}'.format(line.rstrip('\n')))
+                    bh_parse(line)
+        except IOError as err:
+            print(err)
+
+def bh_get_prompt_tokens(cli):
+    if accounts_dirty:
+        dirty = '*'
+        dirtytoken = Token.Dirty
+    else:
+        dirty = '-'
+        dirtytoken = Token.Clean
+    return [
+        (Token.BH, 'BH '),
+        (Token.Taxrate, '{:5.2f}'.format(taxrate)),
+        (dirtytoken, dirty),
+        (Token.BH, '> ')
+    ]
+
+def bh_prompt():
+    try:
+        return prompt(get_prompt_tokens=bh_get_prompt_tokens, style=prompt_style, history=history)
+    except (EOFError, KeyboardInterrupt):
+        exit(0)
+
+def bh_map_command(command):
+    return {
+        'help': bh_hdl_help,
+        'warranty': bh_hdl_warranty,
+        'conditions': bh_hdl_conditions,
+        'quit': bh_hdl_exit,
+        'loadacc': bh_hdl_loadacc,
+        'newacc': bh_hdl_newacc,
+        'delacc': bh_hdl_delacc,
+        'acc': bh_hdl_acc,
+        'accno': bh_hdl_accno,
+        'pracc': bh_hdl_pracc,
+        'saveacc': bh_hdl_saveacc,
+        'clearacc': bh_hdl_clearacc,
+        'setdirty': bh_hdl_setdirty,
+        'settaxr': bh_hdl_settaxr,
+        'prtaxr': bh_hdl_prtaxr,
+        'net': bh_hdl_net,
+        'gr': bh_hdl_gr,
+        'split': bh_hdl_split,
+        'sum': bh_hdl_sum,
+        'netsum': bh_hdl_netsum,
+        'grsum': bh_hdl_grsum,
+        'exec': bh_hdl_exec
+    }.get(command, bh_hdl_unknown)
+
+def bh_parse(cmd):
+    tokens = split(cmd)
+    if len(tokens) == 0:
+        return
+    command = tokens[0]
+    handler = bh_map_command(command)
+    handler(tokens[1:])
+
+def bh_show_version():
+    print(('BH -- Accounting Utility Program v0.1.0\n'
+           'Copyright (C) 2018  Eric Haberstroh <eric@erixpage.de>\n\n'
+           'This program is free software: you can redistribute it and/or modify\n'
+           'it under the terms of the GNU General Public License as published by\n'
+           'the Free Software Foundation, either version 3 of the License, or\n'
+           '(at your option) any later version.\n\n'
+           'This program is distributed in the hope that it will be useful,\n'
+           'but WITHOUT ANY WARRANTY; without even the implied warranty of\n'
+           'MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n'
+           'GNU General Public License for more details.\n\n'
+           'You should have received a copy of the GNU General Public License\n'
+           'along with this program.  If not, see <https://www.gnu.org/licenses/>.\n\n'
+           'Please report bugs at <https://github.com/pille1842/bh>.'))
+    exit(0)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser('bh')
+    parser.add_argument('setupfile', action='append', type=str, nargs='*',
+                        help='a batch file to execute at startup')
+    parser.add_argument('--version', action='store_true',
+                        help='print version information and exit')
+    args = parser.parse_args()
+    if args.version:
+        bh_show_version()
+    print(('BH -- Accounting Utility Program v0.1.0\n'
+           'Copyright (C) 2018  Eric Haberstroh <eric@erixpage.de>\n'
+           'This program comes with ABSOLUTELY NO WARRANTY; for details type `warranty\'.\n'
+           'This is free software, and you are welcome to redistribute it\n'
+           'under certain conditions; type `conditions\' for details.\n\n'
+           'Type `help\' to discover help topics, `quit\' to end the program.\n'))
+    if len(args.setupfile[0]) > 0:
+        bh_hdl_exec(args.setupfile[0])
+    while True:
+        bh_parse(bh_prompt())

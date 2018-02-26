@@ -1,0 +1,43 @@
+.TH BH 1
+.SH NAME
+bh \- accounting utility program
+.SH SYNOPSIS
+.B bh
+[\fB\-h\fR]
+[\fB\-\-version\fR]
+.IR \fR[\fIsetupfile ...]
+.SH DESCRIPTION
+.B bh
+is an interactive accounting utility program providing tools for account management,
+net/gross conversion and bill splitting.
+When launched, \fBbh\fR displays an interactive prompt which allows the user to issue
+commands.
+If one or more \fIsetupfile\fRs are given as arguments, the instructions in those
+files will be executed at startup, for example to set up accounts and set a tax rate.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Display a short help message and exit.
+.TP
+.BR \-\-version
+Display version information and exit.
+.SH FILES
+.B bh
+can read a list of accounts from JSON-formatted files.
+Each such file should contain a JSON object in which the keys symbolize account numbers
+and the values are account names.
+.P
+.B bh
+can also execute commands from batch files.
+Such files should contain one command per line.
+A line may be marked as a comment by beginning it with a pound sign (#).
+No inline comments are allowed.
+.SH EXAMPLE
+    $ \fBbh mysetup.bat\fR
+.SH SEE ALSO
+The full documentation for \fBbh\fR is maintained as a Texinfo manual. If the \fBinfo\fR
+and \fBbh\fR programs are properly installed at your site, the command
+.P
+    \fBinfo bh\fR
+.P
+should give you access to the complete manual.
